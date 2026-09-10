@@ -1,0 +1,107 @@
+version: "3.9"
+
+services:
+  # ── MongoDB ──────────────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:6
+    container_name: gcg_mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: greencode_guardian
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/greencode_guardian --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gcg_network
+
+  # ── Backend (FastAPI) ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gcg_backend
+    restart: unless-stopped
+    env_file: ./backend/.env.example
+    environment:
+      MONGODB_URL: ${MONGODB_URL}
+      DATABASE_NAME: greencode_guardian
+    ports:
+      - "8000:8000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - gcg_network
+    healthcheck:
+      test: curl -f http://localhost:8000/health || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Frontend (React) ─────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_URL: http://localhost:8000
+    container_name: gcg_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - gcg_network
+
+  # ── Prometheus (optional monitoring) ─────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: gcg_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - gcg_network
+    profiles:
+      - monitoring
+
+  # ── Grafana (optional dashboard) ─────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: gcg_grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - gcg_network
+    profiles:
+      - monitoring
+
+volumes:
+  mongo_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  gcg_network:
+    driver: bridge
